@@ -922,6 +922,26 @@ function renderCards(metrics, prior) {
 
 // ── Section 4: UI ──────────────────────────────────────────────────────
 
+function populateRepos(commits) {
+  var sel = document.getElementById('ctrl-repo');
+  var prev = sel.value;
+  var repos = {};
+  commits.forEach(function(c) { if (c.repo) repos[c.repo] = true; });
+  sel.innerHTML = '';
+  var allOpt = document.createElement('option');
+  allOpt.value = '(all)';
+  allOpt.textContent = '(all)';
+  sel.appendChild(allOpt);
+  Object.keys(repos).sort().forEach(function(r) {
+    var opt = document.createElement('option');
+    opt.value = r;
+    opt.textContent = r;
+    sel.appendChild(opt);
+  });
+  if (prev && repos[prev]) sel.value = prev;
+  else sel.value = '(all)';
+}
+
 function populateTimezones(defaultTz) {
   var sel = document.getElementById('ctrl-timezone');
   sel.innerHTML = '';
@@ -949,7 +969,7 @@ function setupControls() {
     clearTimeout(timer);
     timer = setTimeout(renderAll, 150);
   }
-  ['ctrl-since', 'ctrl-until', 'ctrl-granularity', 'ctrl-timezone'].forEach(function(id) {
+  ['ctrl-since', 'ctrl-until', 'ctrl-granularity', 'ctrl-repo', 'ctrl-timezone'].forEach(function(id) {
     document.getElementById(id).addEventListener('change', debouncedRender);
   });
 }
@@ -963,11 +983,21 @@ function renderAll() {
   var tz = document.getElementById('ctrl-timezone').value;
   if (gran === 'auto') gran = resolveGranularity(since, until);
 
-  var filtered = filterCommits(STATE.allCommits, since, until, tz);
+  var allInRange = filterCommits(STATE.allCommits, since, until, tz);
+  populateRepos(allInRange);
+
+  var repo = document.getElementById('ctrl-repo').value;
+  var filtered = allInRange;
+  if (repo !== '(all)') {
+    filtered = filtered.filter(function(c) { return c.repo === repo; });
+  }
   var daily = buildDaily(filtered, since, until, tz);
   var agg = aggregateData(daily, gran);
   var metrics = computeMetrics(daily, since, until);
-  var prior = computePeriodComparison(STATE.allCommits, since, until, tz);
+  var priorSource = repo !== '(all)'
+    ? STATE.allCommits.filter(function(c) { return c.repo === repo; })
+    : STATE.allCommits;
+  var prior = computePeriodComparison(priorSource, since, until, tz);
 
   renderCards(metrics, prior);
   renderHeatmap(daily);
@@ -1068,6 +1098,7 @@ def generate_report(
       <option value="month">Month</option>
     </select>
   </label>
+  <label>Repo: <select id="ctrl-repo"><option value="(all)">(all)</option></select></label>
   <label>TZ: <select id="ctrl-timezone"></select></label>
 </div>
 <div id="cards" class="cards"></div>
