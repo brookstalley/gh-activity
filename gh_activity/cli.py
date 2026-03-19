@@ -2,11 +2,13 @@
 
 import argparse
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from gh_activity.cache import (
     add_fetched_range,
     compute_gaps,
+    invalidate_stale_timestamps,
     load_cache,
     merge_commits,
     save_cache,
@@ -27,8 +29,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--since",
         type=date.fromisoformat,
-        default=date.today() - timedelta(days=365),
-        help="Start date in YYYY-MM-DD format (default: 1 year ago)",
+        default=date.today() - timedelta(days=182),
+        help="Start date in YYYY-MM-DD format (default: 6 months ago)",
     )
     parser.add_argument(
         "--until",
@@ -39,8 +41,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--granularity",
         choices=["day", "week", "month"],
-        default="week",
-        help="Aggregation granularity (default: week)",
+        default=None,
+        help="Aggregation granularity (default: auto based on date range)",
     )
     parser.add_argument(
         "--output",
@@ -57,11 +59,74 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="GitHub username (default: authenticated user)",
     )
+    parser.add_argument(
+        "--timezone",
+        default=None,
+        help="IANA timezone for report (e.g. America/Los_Angeles). Default: system local timezone.",
+    )
+    parser.add_argument(
+        "--cdn",
+        action="store_true",
+        help="Use Plotly CDN instead of embedding (smaller file, requires internet to view)",
+    )
     return parser.parse_args(argv)
+
+
+def resolve_granularity(since: date, until: date) -> str:
+    """Auto-select granularity based on date range span."""
+    span = (until - since).days
+    if span < 30:
+        return "day"
+    elif span <= 180:
+        return "week"
+    else:
+        return "month"
+
+
+def resolve_timezone(tz_arg: str | None):
+    """Resolve timezone from CLI arg or system default."""
+    if tz_arg:
+        try:
+            return ZoneInfo(tz_arg)
+        except (KeyError, Exception):
+            print(f"Error: Unknown timezone '{tz_arg}'", file=sys.stderr)
+            sys.exit(1)
+    # Use system local timezone
+    return datetime.now().astimezone().tzinfo
+
+
+def filter_commits_by_date(commits, since, until, tz):
+    """Filter commits to the requested date range, timezone-aware."""
+    filtered = []
+    for c in commits:
+        raw = c.get("date", "")
+        if not raw:
+            continue
+        try:
+            if len(raw) <= 10:
+                commit_date = date.fromisoformat(raw)
+            else:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                commit_date = dt.astimezone(tz).date()
+        except (ValueError, TypeError):
+            continue
+        if since <= commit_date <= until:
+            filtered.append(c)
+    return filtered
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
+    # Resolve granularity
+    user_specified_granularity = args.granularity is not None
+    if not user_specified_granularity:
+        args.granularity = resolve_granularity(args.since, args.until)
+        progress(f"Auto-selected granularity: {args.granularity}")
+
+    # Resolve timezone
+    tz = resolve_timezone(args.timezone)
+    progress(f"Timezone: {tz}")
 
     # Resolve username
     if args.username:
@@ -79,6 +144,12 @@ def main(argv: list[str] | None = None) -> None:
         cache_data = load_cache(username)
         cached_count = len(cache_data.get("commits", []))
         progress(f"Cache: {cached_count} commits loaded")
+
+        # Migrate stale cache entries (date-only → full timestamps)
+        cache_data = invalidate_stale_timestamps(cache_data)
+        new_count = len(cache_data.get("commits", []))
+        if new_count < cached_count:
+            progress(f"Cache: {cached_count - new_count} stale entries invalidated, will re-fetch")
 
     # Determine what date ranges need fetching
     gaps = compute_gaps(
@@ -100,10 +171,17 @@ def main(argv: list[str] | None = None) -> None:
         progress(f"  Found {len(new_commits)} commits")
         all_new_commits.extend(new_commits)
 
-    # Fetch line stats for new commits
+    # Fetch line stats only for commits not already cached
     if all_new_commits:
-        progress(f"Fetching line stats for {len(all_new_commits)} commits...")
-        fetch_commit_stats(all_new_commits, progress_callback=progress)
+        cached_shas = {c["sha"] for c in cache_data.get("commits", [])
+                       if c.get("additions") is not None}
+        truly_new = [c for c in all_new_commits if c["sha"] not in cached_shas]
+        if truly_new:
+            progress(f"Fetching line stats for {len(truly_new)} new commits "
+                     f"({len(all_new_commits) - len(truly_new)} already cached)...")
+            fetch_commit_stats(truly_new, progress_callback=progress)
+        else:
+            progress(f"Line stats already cached for all {len(all_new_commits)} commits")
 
     # Merge into cache
     cache_data["commits"] = merge_commits(
@@ -121,11 +199,8 @@ def main(argv: list[str] | None = None) -> None:
     save_cache(username, cache_data)
     progress(f"Cache: {len(cache_data['commits'])} total commits saved")
 
-    # Filter commits to requested date range
-    commits = [
-        c for c in cache_data["commits"]
-        if args.since.isoformat() <= c.get("date", "") <= args.until.isoformat()
-    ]
+    # Filter commits to requested date range (timezone-aware)
+    commits = filter_commits_by_date(cache_data["commits"], args.since, args.until, tz)
     progress(f"Commits in range: {len(commits)}")
 
     # Generate report
@@ -134,9 +209,12 @@ def main(argv: list[str] | None = None) -> None:
         commits=commits,
         since=args.since,
         until=args.until,
-        granularity=args.granularity,
+        granularity=args.granularity if user_specified_granularity else "auto",
         output_path=args.output,
         username=username,
+        tz=tz,
+        use_cdn=args.cdn,
+        all_cached_commits=cache_data["commits"],
     )
     progress(f"Report written to {args.output}")
 

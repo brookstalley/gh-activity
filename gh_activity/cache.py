@@ -12,6 +12,7 @@ from typing import Any
 
 
 CACHE_DIR = Path.home() / ".cache" / "gh-activity"
+CACHE_VERSION = 3  # v2: author-date; v3: fix search pagination bug that dropped commits
 
 
 def cache_path(username: str) -> Path:
@@ -19,31 +20,65 @@ def cache_path(username: str) -> Path:
 
 
 def load_cache(username: str) -> dict:
-    """Load cache from disk. Returns empty structure if missing."""
+    """Load cache from disk. Returns empty structure if missing or outdated."""
     path = cache_path(username)
     if not path.exists():
-        return {"commits": [], "fetched_ranges": []}
+        return {"commits": [], "fetched_ranges": [], "version": CACHE_VERSION}
     with open(path) as f:
-        return json.load(f)
+        data = json.load(f)
+    if data.get("version") != CACHE_VERSION:
+        # Keep commits (preserves expensive line stats), clear ranges to trigger
+        # re-search so merge_commits can update metadata (e.g., author dates)
+        return {
+            "commits": data.get("commits", []),
+            "fetched_ranges": [],
+            "version": CACHE_VERSION,
+        }
+    return data
 
 
 def save_cache(username: str, data: dict) -> None:
     """Save cache to disk."""
+    data["version"] = CACHE_VERSION
     path = cache_path(username)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, indent=2, default=str)
 
 
+def invalidate_stale_timestamps(cache_data: dict) -> dict:
+    """Detect and invalidate cached commits that lack full timestamps.
+
+    Old cache entries store date-only strings (10 chars). Full ISO timestamps
+    are 20+ chars. When stale entries are found, they are removed and
+    fetched_ranges is cleared so the data will be re-fetched.
+    """
+    commits = cache_data.get("commits", [])
+    has_stale = any(len(c.get("date", "")) <= 10 for c in commits)
+    if not has_stale:
+        return cache_data
+    # Remove stale commits and clear ranges to trigger re-fetch
+    fresh = [c for c in commits if len(c.get("date", "")) > 10]
+    return {"commits": fresh, "fetched_ranges": []}
+
+
 def merge_commits(existing: list[dict], new: list[dict]) -> list[dict]:
-    """Merge new commits into existing, deduplicating by SHA."""
-    seen = {c["sha"] for c in existing}
-    merged = list(existing)
+    """Merge new commits into existing, deduplicating by SHA.
+
+    When a SHA exists in both, updates metadata (date, message) from new
+    while preserving existing line stats (additions, deletions).
+    """
+    by_sha = {c["sha"]: c for c in existing}
     for c in new:
-        if c["sha"] not in seen:
-            seen.add(c["sha"])
-            merged.append(c)
-    return merged
+        if c["sha"] in by_sha:
+            # Update metadata from newer search results, preserve line stats
+            if "date" in c:
+                by_sha[c["sha"]]["date"] = c["date"]
+            if c.get("message"):
+                by_sha[c["sha"]]["message"] = c["message"]
+        else:
+            by_sha[c["sha"]] = c
+    return list(by_sha.values())
 
 
 def add_fetched_range(ranges: list[list[str]], start: str, end: str) -> list[list[str]]:

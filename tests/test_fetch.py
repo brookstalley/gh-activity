@@ -21,7 +21,7 @@ class TestFetchSearchPage:
                     "sha": "abc123",
                     "repository": {"full_name": "user/repo1"},
                     "commit": {
-                        "committer": {"date": "2025-06-15T10:00:00Z"},
+                        "author": {"date": "2025-06-15T10:00:00Z"},
                         "message": "Fix bug",
                     },
                 },
@@ -29,7 +29,7 @@ class TestFetchSearchPage:
                     "sha": "def456",
                     "repository": {"full_name": "user/repo2"},
                     "commit": {
-                        "committer": {"date": "2025-06-16T12:00:00Z"},
+                        "author": {"date": "2025-06-16T12:00:00Z"},
                         "message": "Add feature\n\nLong description",
                     },
                 },
@@ -40,7 +40,7 @@ class TestFetchSearchPage:
         assert len(commits) == 2
         assert commits[0]["sha"] == "abc123"
         assert commits[0]["repo"] == "user/repo1"
-        assert commits[0]["date"] == "2025-06-15"
+        assert commits[0]["date"] == "2025-06-15T10:00:00Z"
         assert commits[1]["message"] == "Add feature"  # first line only
 
     @patch("gh_activity.fetch.gh_api")
@@ -56,8 +56,8 @@ class TestSearchCommits:
     def test_deduplicates(self, mock_fetch):
         mock_fetch.return_value = (
             [
-                {"sha": "aaa", "repo": "r", "date": "2025-01-01", "message": "m"},
-                {"sha": "aaa", "repo": "r", "date": "2025-01-01", "message": "m"},
+                {"sha": "aaa", "repo": "r", "date": "2025-01-01T00:00:00Z", "message": "m"},
+                {"sha": "aaa", "repo": "r", "date": "2025-01-01T00:00:00Z", "message": "m"},
             ],
             2,
         )
@@ -78,13 +78,13 @@ class TestSearchCommits:
                 return ([], 1500)  # Over limit, triggers split
             elif until <= date(2025, 7, 2):
                 return (
-                    [{"sha": f"a{i}", "repo": "r", "date": "2025-03-01", "message": "m"}
+                    [{"sha": f"a{i}", "repo": "r", "date": "2025-03-01T12:00:00Z", "message": "m"}
                      for i in range(3)],
                     3,
                 )
             else:
                 return (
-                    [{"sha": f"b{i}", "repo": "r", "date": "2025-09-01", "message": "m"}
+                    [{"sha": f"b{i}", "repo": "r", "date": "2025-09-01T12:00:00Z", "message": "m"}
                      for i in range(2)],
                     2,
                 )
