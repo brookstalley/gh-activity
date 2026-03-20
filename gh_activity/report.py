@@ -92,9 +92,12 @@ def _compute_streak_stats(daily: pd.DataFrame) -> dict:
     else:
         longest = int(active_only.groupby(groups).size().max())
 
-    # Current streak: count backwards from end of range
+    # Current streak: count backwards, skip last day if no commits (incomplete day)
     current = 0
-    for val in reversed(active.values):
+    vals = list(active.values)
+    if vals and not vals[-1]:
+        vals = vals[:-1]
+    for val in reversed(vals):
         if val:
             current += 1
         else:
@@ -304,6 +307,23 @@ _CSS = """
     color: var(--fg);
     font-size: 0.9em;
   }
+  .controls .quick-btns {
+    display: flex;
+    gap: 4px;
+  }
+  .controls .quick-btns button {
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--muted);
+    font-size: 0.8em;
+    cursor: pointer;
+  }
+  .controls .quick-btns button:hover {
+    color: var(--fg);
+    border-color: var(--link);
+  }
   .cards {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -512,7 +532,10 @@ function computeMetrics(daily, since, until) {
     if (daily[i].commits > 0) { streak++; longestStreak = Math.max(longestStreak, streak); }
     else streak = 0;
   }
-  for (var j = daily.length - 1; j >= 0; j--) {
+  // Current streak: skip today if no commits yet (day isn't over)
+  var startIdx = daily.length - 1;
+  if (startIdx >= 0 && daily[startIdx].commits === 0) startIdx--;
+  for (var j = startIdx; j >= 0; j--) {
     if (daily[j].commits > 0) currentStreak++;
     else break;
   }
@@ -647,7 +670,8 @@ function renderRepoBreakdown(commits) {
     var s = byRepo[r];
     return {repo: r, commits: s.commits, additions: s.additions,
             deletions: s.deletions, total: s.additions + s.deletions};
-  }).sort(function(a, b) { return b.total - a.total; });
+  }).filter(function(r) { return r.total > 0; })
+    .sort(function(a, b) { return b.total - a.total; });
 
   if (repos.length > 15) {
     var top = repos.slice(0, 15);
@@ -729,7 +753,7 @@ function renderCommitsChart(agg, gran) {
   var dates = agg.map(function(d) { return d.date; });
   var vals = agg.map(function(d) { return d.commits; });
   var traces = [{
-    type: 'bar', x: dates, y: vals, marker: {color: '#4078c0'},
+    type: 'bar', name: 'Commits', x: dates, y: vals, marker: {color: '#4078c0'},
     hovertemplate: '%{x}<br>%{y} commits<extra></extra>'
   }];
   var wMap = {day: 7, week: 4, month: 3};
@@ -753,7 +777,7 @@ function renderCommitsChart(agg, gran) {
   }, {responsive: true});
 }
 
-function renderLinesChart(agg, gran) {
+function renderLinesChart(agg, gran, until) {
   var section = document.getElementById('lines-section');
   var el = document.getElementById('lines-chart');
   if (agg.length === 0) { section.style.display = 'none'; return; }
@@ -766,17 +790,43 @@ function renderLinesChart(agg, gran) {
   var dels = agg.map(function(d) { return -d.deletions; });
   var net = agg.map(function(d) { return d.additions - d.deletions; });
 
+  // Detect incomplete last period
+  var lastPartial = false;
+  if (gran !== 'day' && agg.length >= 2) {
+    var lastDate = agg[agg.length - 1].date;
+    if (gran === 'week') {
+      lastPartial = until < addDays(lastDate, 6);
+    } else {
+      var ld = daysInMonth(lastDate);
+      lastPartial = until < lastDate.slice(0, 7) + '-' + String(ld).padStart(2, '0');
+    }
+  }
+
+  var n = agg.length;
+  var mainEnd = lastPartial ? n - 1 : n;
   var traces = [
-    {type: 'scatter', x: dates, y: adds, name: 'Additions',
+    {type: 'scatter', x: dates.slice(0, mainEnd), y: adds.slice(0, mainEnd), name: 'Additions',
      fill: 'tozeroy', line: {color: '#2ea44f'}, fillcolor: 'rgba(46,164,79,0.3)',
      hovertemplate: '%{x}<br>+%{y:,} lines<extra></extra>'},
-    {type: 'scatter', x: dates, y: dels, name: 'Deletions',
+    {type: 'scatter', x: dates.slice(0, mainEnd), y: dels.slice(0, mainEnd), name: 'Deletions',
      fill: 'tozeroy', line: {color: '#d73a49'}, fillcolor: 'rgba(215,58,73,0.3)',
      hovertemplate: '%{x}<br>%{y:,} lines<extra></extra>'},
-    {type: 'scatter', mode: 'lines', x: dates, y: net, name: 'Net',
+    {type: 'scatter', mode: 'lines', x: dates.slice(0, mainEnd), y: net.slice(0, mainEnd), name: 'Net',
      line: {color: '#0366d6', width: 2},
      hovertemplate: '%{x}<br>Net: %{y:,} lines<extra></extra>'}
   ];
+  if (lastPartial) {
+    var pSlice = [n - 2, n];
+    traces.push({type: 'scatter', x: dates.slice(pSlice[0], pSlice[1]), y: adds.slice(pSlice[0], pSlice[1]),
+      name: 'Partial', fill: 'tozeroy', line: {color: '#2ea44f', dash: 'dot'}, fillcolor: 'rgba(46,164,79,0.1)',
+      hovertemplate: '%{x}<br>+%{y:,} (partial)<extra></extra>'});
+    traces.push({type: 'scatter', x: dates.slice(pSlice[0], pSlice[1]), y: dels.slice(pSlice[0], pSlice[1]),
+      showlegend: false, fill: 'tozeroy', line: {color: '#d73a49', dash: 'dot'}, fillcolor: 'rgba(215,58,73,0.1)',
+      hovertemplate: '%{x}<br>%{y:,} (partial)<extra></extra>'});
+    traces.push({type: 'scatter', mode: 'lines', x: dates.slice(pSlice[0], pSlice[1]), y: net.slice(pSlice[0], pSlice[1]),
+      showlegend: false, line: {color: '#0366d6', width: 2, dash: 'dot'},
+      hovertemplate: '%{x}<br>Net: %{y:,} (partial)<extra></extra>'});
+  }
 
   var theme = themeLayout();
   Plotly.react(el, traces, {
@@ -972,6 +1022,20 @@ function setupControls() {
   ['ctrl-since', 'ctrl-until', 'ctrl-granularity', 'ctrl-repo', 'ctrl-timezone'].forEach(function(id) {
     document.getElementById(id).addEventListener('change', debouncedRender);
   });
+  document.querySelectorAll('.quick-btns button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var days = parseInt(btn.getAttribute('data-days'), 10);
+      var tz = document.getElementById('ctrl-timezone').value;
+      var untilStr = new Date().toLocaleDateString('en-CA', {timeZone: tz});
+      var since = new Date();
+      since.setDate(since.getDate() - days);
+      var sinceStr = since.toLocaleDateString('en-CA', {timeZone: tz});
+      document.getElementById('ctrl-until').value = untilStr;
+      document.getElementById('ctrl-since').value = sinceStr;
+      document.getElementById('ctrl-granularity').value = 'auto';
+      debouncedRender();
+    });
+  });
 }
 
 // ── Section 5: Orchestrator ────────────────────────────────────────────
@@ -982,6 +1046,8 @@ function renderAll() {
   var gran = document.getElementById('ctrl-granularity').value;
   var tz = document.getElementById('ctrl-timezone').value;
   if (gran === 'auto') gran = resolveGranularity(since, until);
+  var capGran = gran.charAt(0).toUpperCase() + gran.slice(1);
+  document.querySelector('h1').textContent = 'GitHub Activity: ' + STATE.username + ' (' + capGran + 'ly)';
 
   var allInRange = filterCommits(STATE.allCommits, since, until, tz);
   populateRepos(allInRange);
@@ -992,19 +1058,44 @@ function renderAll() {
     filtered = filtered.filter(function(c) { return c.repo === repo; });
   }
   var daily = buildDaily(filtered, since, until, tz);
+
+  // Trim trailing zero-commit days that haven't ended yet (today/future)
+  var todayStr = new Date().toLocaleDateString('en-CA', {timeZone: tz});
+  while (daily.length > 0 && daily[daily.length - 1].date >= todayStr && daily[daily.length - 1].commits === 0) {
+    daily.pop();
+  }
+  var effectiveUntil = daily.length > 0 ? daily[daily.length - 1].date : since;
+
   var agg = aggregateData(daily, gran);
-  var metrics = computeMetrics(daily, since, until);
+  var metrics = computeMetrics(daily, since, effectiveUntil);
   var priorSource = repo !== '(all)'
     ? STATE.allCommits.filter(function(c) { return c.repo === repo; })
     : STATE.allCommits;
   var prior = computePeriodComparison(priorSource, since, until, tz);
 
+  var span = daysBetween(since, effectiveUntil) + 1;
+
   renderCards(metrics, prior);
-  renderHeatmap(daily);
-  renderLinesChart(agg, gran);
+  renderLinesChart(agg, gran, effectiveUntil);
   renderCommitsChart(agg, gran);
-  renderDOW(daily);
-  renderHourChart(filtered, tz);
+
+  // Calendar: only useful with 3+ weeks of data
+  if (span >= 21) {
+    renderHeatmap(daily);
+    document.getElementById('heatmap-section').style.display = '';
+  } else {
+    document.getElementById('heatmap-section').style.display = 'none';
+  }
+
+  // Pattern charts: DOW needs 2+ weeks, Hour needs 1+ week
+  var showDOW = span >= 14;
+  var showHour = span >= 7;
+  if (showDOW) renderDOW(daily);
+  document.getElementById('dow-section').style.display = showDOW ? '' : 'none';
+  if (showHour) renderHourChart(filtered, tz);
+  document.getElementById('hour-section').style.display = showHour ? '' : 'none';
+  document.getElementById('pattern-row').style.display = (showDOW || showHour) ? '' : 'none';
+
   renderRepoBreakdown(filtered);
   renderActiveDaysChart(daily, gran);
   renderTopCommits(filtered);
@@ -1090,6 +1181,11 @@ def generate_report(
 <div class="controls">
   <label>From: <input type="date" id="ctrl-since"></label>
   <label>To: <input type="date" id="ctrl-until"></label>
+  <span class="quick-btns">
+    <button data-days="7">1W</button>
+    <button data-days="30">1M</button>
+    <button data-days="365">1Y</button>
+  </span>
   <label>Gran:
     <select id="ctrl-granularity">
       <option value="auto">Auto</option>
@@ -1102,10 +1198,6 @@ def generate_report(
   <label>TZ: <select id="ctrl-timezone"></select></label>
 </div>
 <div id="cards" class="cards"></div>
-<div class="chart-section" id="heatmap-section">
-  <h3>Contribution Calendar</h3>
-  <div id="heatmap-container" class="chart-container"></div>
-</div>
 <div class="chart-section" id="lines-section">
   <h3>Lines Changed</h3>
   <div id="lines-chart" class="chart-container"></div>
@@ -1114,7 +1206,11 @@ def generate_report(
   <h3>Commits</h3>
   <div id="commits-chart" class="chart-container"></div>
 </div>
-<div class="chart-row">
+<div class="chart-section" id="heatmap-section">
+  <h3>Contribution Calendar</h3>
+  <div id="heatmap-container" class="chart-container"></div>
+</div>
+<div class="chart-row" id="pattern-row">
   <div class="chart-section chart-half" id="dow-section">
     <h3>Commits by Day of Week</h3>
     <div id="dow-chart" class="chart-container"></div>

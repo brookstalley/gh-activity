@@ -136,7 +136,8 @@ class TestStreakStats:
     def test_single_day(self):
         daily, _ = build_dataframe(_commits([5]), date(2025, 1, 1), date(2025, 1, 10))
         s = _compute_streak_stats(daily)
-        assert s["current_streak"] == 0  # day 5 is not end of range (day 10 is)
+        # Day 10 (last) has no commits → skip it; day 9 has none → streak 0
+        assert s["current_streak"] == 0
         assert s["longest_streak"] == 1
         assert s["avg_gap"] == 0.0
 
@@ -157,6 +158,23 @@ class TestStreakStats:
     def test_current_streak_broken(self):
         daily, _ = build_dataframe(
             _commits([7, 8]), date(2025, 1, 1), date(2025, 1, 10),
+        )
+        s = _compute_streak_stats(daily)
+        assert s["current_streak"] == 0
+
+    def test_current_streak_skips_incomplete_today(self):
+        # Commits on days 8, 9 but NOT on day 10 (today/end of range)
+        # Streak should be 2, not 0 — today isn't over yet
+        daily, _ = build_dataframe(
+            _commits([8, 9]), date(2025, 1, 1), date(2025, 1, 10),
+        )
+        s = _compute_streak_stats(daily)
+        assert s["current_streak"] == 2
+
+    def test_current_streak_two_days_gap_is_zero(self):
+        # Commits on day 7 but not 8, 9, or 10 — streak is truly broken
+        daily, _ = build_dataframe(
+            _commits([7]), date(2025, 1, 1), date(2025, 1, 10),
         )
         s = _compute_streak_stats(daily)
         assert s["current_streak"] == 0
