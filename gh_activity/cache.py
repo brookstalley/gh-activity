@@ -12,7 +12,7 @@ from typing import Any
 
 
 CACHE_DIR = Path.home() / ".cache" / "gh-activity"
-CACHE_VERSION = 3  # v2: author-date; v3: fix search pagination bug that dropped commits
+CACHE_VERSION = 4  # v3: pagination fix; v4: reduce chunk size for reliable search results
 
 
 def cache_path(username: str) -> Path:

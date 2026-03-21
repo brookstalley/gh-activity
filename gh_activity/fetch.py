@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from typing import Any
 
 
-MAX_SEARCH_RESULTS = 1000
+MAX_SEARCH_RESULTS = 300  # Keep low to avoid GitHub search API silently dropping results
 GRAPHQL_BATCH_SIZE = 50
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 30  # seconds
